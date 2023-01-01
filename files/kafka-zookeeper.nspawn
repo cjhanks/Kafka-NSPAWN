@@ -1,0 +1,11 @@
+[Exec]
+Boot=yes
+NotifyReady=yes
+LinkJournal=host
+
+[Files]
+Bind=/data/kafka/zookeeper:/data/kafka
+
+[Network]
+VirtualEthernet=yes
+Bridge=br0
