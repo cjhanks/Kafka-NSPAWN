@@ -1,0 +1,8 @@
+[Exec]
+Boot=yes
+NotifyReady=yes
+LinkJournal=host
+
+[Network]
+VirtualEthernet=yes
+Bridge=br0

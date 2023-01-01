@@ -1,0 +1,10 @@
+[Exec]
+Boot=yes
+NotifyReady=yes
+LinkJournal=host
+
+[Files]
+Bind=/data/kafka/node3:/data/kafka
+
+[Network]
+Bridge=br0
