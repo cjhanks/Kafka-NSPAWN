@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
-#set -x
+set -x
+
+CLUSTER_SIZE=3
 
 # ---------------------------------------------------------------------------- #
 # If the `machinectl` does not already have a copy of the Jammy tar image, 
@@ -66,21 +68,25 @@ sleep 1
 # container.  But for demonstration purposes, this is sufficient.
 # ---------------------------------------------------------------------------- #
 rm -rf /data/kafka
-mkdir -p /data/kafka/node1/config/kraft
-mkdir -p /data/kafka/node2/config/kraft
-mkdir -p /data/kafka/node3/config/kraft
+
+for i in $(seq 1 ${CLUSTER_SIZE})
+do
+  mkdir -p /data/kafka/node${i}/config/kraft
+done
 
 chmod -R 0777 /data/kafka/  # Don't do this in production.
 
 # ---------------------------------------------------------------------------- #
-#  We are going to clone the kafka-base a few times.  For node1-node3, those
+#  We are going to clone the kafka-base a few times.  For node1-nodeN, those
 #  are required.  They are needed for the cluster.  Additionally, I clone a 
 #  `kafka-tester` which allows me to use the CLI tools in a container that is 
 #  not ALSO a cluster node.
 # ---------------------------------------------------------------------------- #
-machinectl clone kafka-base kafka-node1
-machinectl clone kafka-base kafka-node2
-machinectl clone kafka-base kafka-node3
+for i in $(seq 1 ${CLUSTER_SIZE})
+do
+  machinectl clone kafka-base kafka-node${i}
+done
+
 machinectl clone kafka-base kafka-tester
 
 # We don't need the base anymore.
@@ -98,30 +104,70 @@ machinectl remove kafka-base
 # Bind=/data/kafka/node1:/data/kafka  # Bind mount
 # [Network]
 # VirtualEthernet=yes 	              # Create a virtual ethernet device.
-# Bridge=br0                          # Attach the virtual ethernet to the br0 network.
+# Bridge=br0                          # Attach the vethernet to the br0 network.
 # ---------------------------------------------------------------------------- #
 mkdir -p /etc/systemd-nspawn
-cp files/*.nspawn /etc/systemd/nspawn
 
-machinectl start kafka-node1
-machinectl start kafka-node2
-machinectl start kafka-node3
+for i in $(seq 1 ${CLUSTER_SIZE})
+do
+  cat > /etc/systemd/nspawn/kafka-node${i}.nspawn <<EOF
+[Exec]
+Boot=yes
+NotifyReady=yes
+LinkJournal=host
+
+[Files]
+Bind=/data/kafka/node${i}:/data/kafka
+
+[Network]
+VirtualEthernet=yes
+Bridge=br0
+done
+EOF
+
+  machinectl start kafka-node${i}
+done
+
+# Install the NSPAWN for the tester.
+ cat > /etc/systemd/nspawn/kafka-tester.nspawn <<EOF
+[Exec]
+Boot=yes
+NotifyReady=yes
+LinkJournal=host
+
+[Network]
+VirtualEthernet=yes
+Bridge=br0
+done
+EOF
+
 machinectl start kafka-tester
 
 # ---------------------------------------------------------------------------- #
-# Each one of the nodes has a unique `node.id=` value to distinguish them.  
-# This block could be templated, but I did not want to obfuscate the very 
-# basic logic.
+# We need to craft the properties files for the KRaft cluster.  So each 
+# container has a unique node.id.
 # ---------------------------------------------------------------------------- #
-cp \
-  config/node1.properties \
-  /data/kafka/node1/config/kraft/server.properties
-cp \
-  config/node2.properties \
-  /data/kafka/node2/config/kraft/server.properties
-cp \
-  config/node3.properties \
-  /data/kafka/node3/config/kraft/server.properties
+QUORUM_VOTERS=()
+for i in $(seq 1 ${CLUSTER_SIZE})
+do
+  QUORUM_VOTERS+=(${i}@kafka-node${i}.local:19092)
+done
+
+QUORUM_VOTERS=$(echo ${QUORUM_VOTERS[@]} | sed 's/ /,/g')
+
+for i in $(seq 1 ${CLUSTER_SIZE})
+do
+  cat > /data/kafka/node${i}/config/kraft/server.properties<<EOF
+node.id=${i}
+process.roles=broker,controller
+inter.broker.listener.name=PLAINTEXT
+controller.listener.names=CONTROLLER
+listeners=PLAINTEXT://:9092,CONTROLLER://:19092
+log.dirs=/data/kafka/kraft-combined-logs
+listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL,SASL_PLAINTEXT:SASL_PLAINTEXT,SASL_SSL:SASL_SSL
+controller.quorum.voters=${QUORUM_VOTERS}
+EOF
+done
 
 # ---------------------------------------------------------------------------- #
 # Here we are going to:
@@ -131,15 +177,12 @@ cp \
 # ---------------------------------------------------------------------------- #
 CLUSTER_ID=$(systemd-run --pipe -M kafka-node1 /opt/kafka/bin/kafka-storage.sh random-uuid)
 
-cat files/init-server.sh | \
-  systemd-run --pipe -E HOSTNAME=kafka-node1 -E CLUSTER_ID=${CLUSTER_ID} -M kafka-node1 \
-    /bin/bash -
-
-cat files/init-server.sh | \
-  systemd-run --pipe -E HOSTNAME=kafka-node2 -E CLUSTER_ID=${CLUSTER_ID} -M kafka-node2 \
-    /bin/bash -
-
-cat files/init-server.sh | \
-  systemd-run --pipe -E HOSTNAME=kafka-node3 -E CLUSTER_ID=${CLUSTER_ID} -M kafka-node3 \
-    /bin/bash -
-
+for i in $(seq 1 ${CLUSTER_SIZE}) 
+do
+  cat files/init-server.sh | \
+    systemd-run --pipe \
+      -E HOSTNAME=kafka-node${i} \
+      -E CLUSTER_ID=${CLUSTER_ID} \
+      -M kafka-node${i} \
+        /bin/bash -
+done

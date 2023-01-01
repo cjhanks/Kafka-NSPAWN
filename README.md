@@ -18,7 +18,7 @@ containers will run on this host.
 There are numerous ways to set up networking.  I am using a bridge network that
 utilizes the `systemd-networkd` interface.  
 
-I have two files placed into my `/etc/systemd/network/`
+I have three files placed into my `/etc/systemd/network/`
 
 **20-br0.netdev**
 ```
@@ -34,6 +34,14 @@ Name=eno1 eno2 eno3 eno4
 
 [Network]
 Bridge=br0
+```
+
+**22-br0.network**
+```
+[Match]
+Name=br0
+
+[Network]
 DHCP=ipv4
 ```
 
